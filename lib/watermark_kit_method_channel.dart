@@ -15,7 +15,9 @@ class MethodChannelWatermarkKit extends WatermarkKitPlatform {
 
   @override
   Future<String?> getPlatformVersion() async {
-    final version = await methodChannel.invokeMethod<String>('getPlatformVersion');
+    final version = await methodChannel.invokeMethod<String>(
+      'getPlatformVersion',
+    );
     return version;
   }
 
@@ -104,9 +106,15 @@ class MethodChannelWatermarkKit extends WatermarkKitPlatform {
         'marginUnit': marginUnit,
         'offsetUnit': offsetUnit,
       };
-      final bytes = await methodChannel.invokeMethod<Uint8List>('composeImage', args);
+      final bytes = await methodChannel.invokeMethod<Uint8List>(
+        'composeImage',
+        args,
+      );
       if (bytes == null) {
-        throw PlatformException(code: 'compose_failed', message: 'No bytes returned');
+        throw PlatformException(
+          code: 'compose_failed',
+          message: 'No bytes returned',
+        );
       }
       return bytes;
     }
@@ -181,9 +189,15 @@ class MethodChannelWatermarkKit extends WatermarkKitPlatform {
         'fontWeight': fontWeight,
         'colorArgb': colorArgb,
       };
-      final bytes = await methodChannel.invokeMethod<Uint8List>('composeText', args);
+      final bytes = await methodChannel.invokeMethod<Uint8List>(
+        'composeText',
+        args,
+      );
       if (bytes == null) {
-        throw PlatformException(code: 'compose_text_failed', message: 'No bytes returned');
+        throw PlatformException(
+          code: 'compose_text_failed',
+          message: 'No bytes returned',
+        );
       }
       return bytes;
     }
@@ -225,6 +239,7 @@ class MethodChannelWatermarkKit extends WatermarkKitPlatform {
         return pigeon.MeasureUnit.px;
     }
   }
+
   // ---------------- Video API ----------------
   static final Map<String, _VideoTaskState> _tasks = {};
   static bool _callbacksInitialized = false;
@@ -280,36 +295,45 @@ class MethodChannelWatermarkKit extends WatermarkKitPlatform {
       offsetUnit: _unitFromString(offsetUnit),
       widthPercent: widthPercent,
       opacity: opacity,
-      codec: (codec == 'hevc') ? pigeon.VideoCodec.hevc : pigeon.VideoCodec.h264,
+      codec: (codec == 'hevc')
+          ? pigeon.VideoCodec.hevc
+          : pigeon.VideoCodec.h264,
       bitrateBps: bitrateBps,
       maxFps: maxFps,
       maxLongSide: maxLongSide,
     );
 
     // Fire-and-forget; completion will also complete the future
-    unawaited(pigeon.WatermarkApi().composeVideo(req).then((res) {
-      // Fallback completion in case onVideoCompleted wasn't received
-      final st = _tasks[res.taskId];
-      if (st != null && !st.completer.isCompleted) {
-        st.ctrl.close();
-        st.completer.complete(VideoResult(
-          path: res.outputVideoPath,
-          width: res.width,
-          height: res.height,
-          durationMs: res.durationMs,
-          codec: res.codec == pigeon.VideoCodec.hevc ? 'hevc' : 'h264',
-        ));
-        _tasks.remove(res.taskId);
-      }
-    }).catchError((e, st) {
-      // If error surfaces via returned Future
-      final s = _tasks.remove(taskId);
-      if (s != null && !s.completer.isCompleted) {
-        s.ctrl.addError(e, st);
-        s.ctrl.close();
-        s.completer.completeError(e, st);
-      }
-    }));
+    unawaited(
+      pigeon.WatermarkApi()
+          .composeVideo(req)
+          .then((res) {
+            // Fallback completion in case onVideoCompleted wasn't received
+            final st = _tasks[res.taskId];
+            if (st != null && !st.completer.isCompleted) {
+              st.ctrl.close();
+              st.completer.complete(
+                VideoResult(
+                  path: res.outputVideoPath,
+                  width: res.width,
+                  height: res.height,
+                  durationMs: res.durationMs,
+                  codec: res.codec == pigeon.VideoCodec.hevc ? 'hevc' : 'h264',
+                ),
+              );
+              _tasks.remove(res.taskId);
+            }
+          })
+          .catchError((e, st) {
+            // If error surfaces via returned Future
+            final s = _tasks.remove(taskId);
+            if (s != null && !s.completer.isCompleted) {
+              s.ctrl.addError(e, st);
+              s.ctrl.close();
+              s.completer.completeError(e, st);
+            }
+          }),
+    );
 
     return VideoTask(
       taskId: taskId,
@@ -337,7 +361,9 @@ class _CallbacksImpl extends pigeon.WatermarkCallbacks {
   @override
   void onVideoProgress(String taskId, double progress, double etaSec) {
     final st = MethodChannelWatermarkKit._tasks[taskId];
-    st?.ctrl.add(progress);
+    if (st != null) {
+      st.ctrl.add(progress);
+    }
   }
 
   @override
@@ -345,13 +371,15 @@ class _CallbacksImpl extends pigeon.WatermarkCallbacks {
     final st = MethodChannelWatermarkKit._tasks.remove(result.taskId);
     if (st != null && !st.completer.isCompleted) {
       st.ctrl.close();
-      st.completer.complete(VideoResult(
-        path: result.outputVideoPath,
-        width: result.width,
-        height: result.height,
-        durationMs: result.durationMs,
-        codec: result.codec == pigeon.VideoCodec.hevc ? 'hevc' : 'h264',
-      ));
+      st.completer.complete(
+        VideoResult(
+          path: result.outputVideoPath,
+          width: result.width,
+          height: result.height,
+          durationMs: result.durationMs,
+          codec: result.codec == pigeon.VideoCodec.hevc ? 'hevc' : 'h264',
+        ),
+      );
     }
   }
 

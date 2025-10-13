@@ -44,7 +44,9 @@ final class VideoWatermarkProcessor {
       do {
         try self.process(plugin: plugin, state: state, callbacks: callbacks, taskId: taskId, onComplete: onComplete, onError: onError)
       } catch let err {
-        callbacks.onVideoError(taskId: taskId, code: "compose_failed", message: err.localizedDescription) { _ in }
+        DispatchQueue.main.async {
+          callbacks.onVideoError(taskId: taskId, code: "compose_failed", message: err.localizedDescription) { _ in }
+        }
         onError("compose_failed", err.localizedDescription)
         self.tasks[taskId] = nil
       }
@@ -164,36 +166,45 @@ final class VideoWatermarkProcessor {
 
     // Processing loop
     var lastPTS = CMTime.zero
-    while reader.status == .reading && !state.cancelled {
+    var noMoreVideoFrames = false
+    while reader.status == .reading && !state.cancelled && !noMoreVideoFrames {
       autoreleasepool {
-        if videoInput.isReadyForMoreMediaData, let sample = videoReaderOutput.copyNextSampleBuffer() {
-          let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-          lastPTS = pts
-          guard let pool = adaptor.pixelBufferPool else { return }
-          var pb: CVPixelBuffer? = nil
-          CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pb)
-          guard let dst = pb else { return }
+        if videoInput.isReadyForMoreMediaData {
+          if let sample = videoReaderOutput.copyNextSampleBuffer() {
+            let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+            lastPTS = pts
+            guard let pool = adaptor.pixelBufferPool else { return }
+            var pb: CVPixelBuffer? = nil
+            CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pb)
+            guard let dst = pb else { return }
 
-          // Create base CIImage from sample
-          if let srcPB = CMSampleBufferGetImageBuffer(sample) {
-            let base = CIImage(cvPixelBuffer: srcPB)
-            let output: CIImage
-            if let overlay = preparedOverlay {
-              // Source-over
-              let filter = CIFilter(name: "CISourceOverCompositing")!
-              filter.setValue(overlay, forKey: kCIInputImageKey)
-              filter.setValue(base, forKey: kCIInputBackgroundImageKey)
-              output = filter.outputImage ?? base
-            } else {
-              output = base
+            // Create base CIImage from sample
+            if let srcPB = CMSampleBufferGetImageBuffer(sample) {
+              let base = CIImage(cvPixelBuffer: srcPB)
+              let output: CIImage
+              if let overlay = preparedOverlay {
+                // Source-over
+                let filter = CIFilter(name: "CISourceOverCompositing")!
+                filter.setValue(overlay, forKey: kCIInputImageKey)
+                filter.setValue(base, forKey: kCIInputBackgroundImageKey)
+                output = filter.outputImage ?? base
+              } else {
+                output = base
+              }
+              ciContext.render(output, to: dst, bounds: CGRect(x: 0, y: 0, width: display.width, height: display.height), colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+              _ = adaptor.append(dst, withPresentationTime: pts)
             }
-            ciContext.render(output, to: dst, bounds: CGRect(x: 0, y: 0, width: display.width, height: display.height), colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
-            _ = adaptor.append(dst, withPresentationTime: pts)
-          }
 
-          // Progress
-          let p = max(0.0, min(1.0, CMTimeGetSeconds(pts) / max(0.001, duration)))
-          callbacks.onVideoProgress(taskId: taskId, progress: p, etaSec: max(0.0, duration - CMTimeGetSeconds(pts))) { _ in }
+            // Progress
+            let p = max(0.0, min(1.0, CMTimeGetSeconds(pts) / max(0.001, duration)))
+            // IMPORTANT: Pigeon callbacks MUST be called on main thread
+            DispatchQueue.main.async {
+              callbacks.onVideoProgress(taskId: taskId, progress: p, etaSec: max(0.0, duration - CMTimeGetSeconds(pts))) { _ in }
+            }
+          } else {
+            // No more video frames available
+            noMoreVideoFrames = true
+          }
         } else {
           // Back off a little
           usleep(2000)
@@ -214,7 +225,9 @@ final class VideoWatermarkProcessor {
       audioInput?.markAsFinished()
       writer.cancelWriting()
       try? FileManager.default.removeItem(at: state.outputURL)
-      callbacks.onVideoError(taskId: taskId, code: "cancelled", message: "Cancelled") { _ in }
+      DispatchQueue.main.async {
+        callbacks.onVideoError(taskId: taskId, code: "cancelled", message: "Cancelled") { _ in }
+      }
       onError("cancelled", "Cancelled")
       tasks[taskId] = nil
       return
@@ -233,23 +246,30 @@ final class VideoWatermarkProcessor {
     videoInput.markAsFinished()
     audioInput?.markAsFinished()
     reader.cancelReading()
-    writer.finishWriting { [weak self] in
-      guard let self else { return }
-      if writer.status == .completed {
-        let res = ComposeVideoResult(taskId: taskId,
-                                     outputVideoPath: state.outputURL.path,
-                                     width: Int64(display.width),
-                                     height: Int64(display.height),
-                                     durationMs: Int64(duration * 1000.0),
-                                     codec: request.codec)
-        callbacks.onVideoCompleted(result: res) { _ in }
-        onComplete(res)
-      } else {
-        let msg = writer.error?.localizedDescription ?? "Unknown writer error"
-        callbacks.onVideoError(taskId: taskId, code: "encode_failed", message: msg) { _ in }
-        onError("encode_failed", msg)
+    
+    // Dispatch to main queue to ensure completion handler is called
+    DispatchQueue.main.async {
+      writer.finishWriting { [weak self] in
+        guard let self else { return }
+        
+        if writer.status == .completed {
+          let res = ComposeVideoResult(taskId: taskId,
+                                       outputVideoPath: state.outputURL.path,
+                                       width: Int64(display.width),
+                                       height: Int64(display.height),
+                                       durationMs: Int64(duration * 1000.0),
+                                       codec: request.codec)
+          DispatchQueue.main.async {
+            callbacks.onVideoCompleted(result: res) { _ in }
+          }
+          onComplete(res)
+        } else {
+          let msg = writer.error?.localizedDescription ?? "Unknown writer error"
+          callbacks.onVideoError(taskId: taskId, code: "encode_failed", message: msg) { _ in }
+          onError("encode_failed", msg)
+        }
+        self.tasks[taskId] = nil
       }
-      self.tasks[taskId] = nil
     }
   }
 
