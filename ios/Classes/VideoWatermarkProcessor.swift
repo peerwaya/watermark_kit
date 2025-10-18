@@ -76,8 +76,11 @@ final class VideoWatermarkProcessor {
     let t = videoTrack.preferredTransform
     let display = CGSize(width: abs(natural.applying(t).width), height: abs(natural.applying(t).height))
 
-    // Prepare overlay CIImage once
-    let overlayCI: CIImage? = try Self.prepareOverlayCI(request: request, plugin: plugin, baseWidth: display.width, baseHeight: display.height)
+    // Use natural size for rendering; transform will handle rotation
+    let renderSize = natural
+    
+    // Prepare overlay for display dimensions (user expectation), then transform to natural space
+    let overlayCI: CIImage? = try Self.prepareOverlayCI(request: request, plugin: plugin, baseWidth: display.width, baseHeight: display.height, transform: t, naturalSize: natural, offsetX: request.offsetX, offsetY: request.offsetY, offsetUnit: request.offsetUnit)
 
     let reader = try AVAssetReader(asset: asset)
     let videoReaderOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: [
@@ -101,6 +104,7 @@ final class VideoWatermarkProcessor {
     let writer = try AVAssetWriter(outputURL: state.outputURL, fileType: .mp4)
     // Video writer input
     let codec: AVVideoCodecType = (request.codec == .hevc) ? .hevc : .h264
+    // Use display size for bitrate estimation (final output size)
     let defaultBitrate = Int64(Self.estimateBitrate(width: Int(display.width), height: Int(display.height), fps: Float(videoTrack.nominalFrameRate)))
     let bitrate64: Int64 = request.bitrateBps ?? defaultBitrate
     var compression: [String: Any] = [
@@ -109,10 +113,11 @@ final class VideoWatermarkProcessor {
     if codec == .h264 {
       compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
     }
+    // Use natural (unrotated) size for video settings; transform will handle rotation
     let videoSettings: [String: Any] = [
       AVVideoCodecKey: codec,
-      AVVideoWidthKey: Int(display.width),
-      AVVideoHeightKey: Int(display.height),
+      AVVideoWidthKey: Int(renderSize.width),
+      AVVideoHeightKey: Int(renderSize.height),
       AVVideoCompressionPropertiesKey: compression,
     ]
     let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
@@ -120,10 +125,11 @@ final class VideoWatermarkProcessor {
     videoInput.transform = videoTrack.preferredTransform
     guard writer.canAdd(videoInput) else { throw NSError(domain: "wm", code: -3, userInfo: [NSLocalizedDescriptionKey: "Cannot add video writer input"]) }
     writer.add(videoInput)
+    // Use natural size for pixel buffers; transform will handle rotation
     let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: videoInput, sourcePixelBufferAttributes: [
       kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-      kCVPixelBufferWidthKey as String: Int(display.width),
-      kCVPixelBufferHeightKey as String: Int(display.height),
+      kCVPixelBufferWidthKey as String: Int(renderSize.width),
+      kCVPixelBufferHeightKey as String: Int(renderSize.height),
       kCVPixelBufferIOSurfacePropertiesKey as String: [:]
     ])
 
@@ -145,23 +151,12 @@ final class VideoWatermarkProcessor {
 
     let ciContext = plugin.sharedCIContext
 
-    // Precompute overlay with opacity and translation in display coordinates
+    // Apply opacity to overlay (already positioned and transformed in natural space)
     let preparedOverlay: CIImage? = {
       guard let ov = overlayCI else { return nil }
       // Apply opacity
       let alphaVec = CIVector(x: 0, y: 0, z: 0, w: CGFloat(request.opacity))
-      let withOpacity = ov.applyingFilter("CIColorMatrix", parameters: ["inputAVector": alphaVec])
-      // Compute position
-      let baseRect = CGRect(x: 0, y: 0, width: display.width, height: display.height)
-      let wmRect = withOpacity.extent
-      let marginX = (request.marginUnit == .percent) ? CGFloat(request.margin) * display.width : CGFloat(request.margin)
-      let marginY = (request.marginUnit == .percent) ? CGFloat(request.margin) * display.height : CGFloat(request.margin)
-      var pos = Self.positionRect(base: baseRect, overlay: wmRect, anchor: request.anchor, marginX: marginX, marginY: marginY)
-      let dx = (request.offsetUnit == .percent) ? CGFloat(request.offsetX) * display.width : CGFloat(request.offsetX)
-      let dy = (request.offsetUnit == .percent) ? CGFloat(request.offsetY) * display.height : CGFloat(request.offsetY)
-      pos.x += dx
-      pos.y += dy
-      return withOpacity.transformed(by: CGAffineTransform(translationX: floor(pos.x), y: floor(pos.y)))
+      return ov.applyingFilter("CIColorMatrix", parameters: ["inputAVector": alphaVec])
     }()
 
     // Processing loop
@@ -191,7 +186,8 @@ final class VideoWatermarkProcessor {
               } else {
                 output = base
               }
-              ciContext.render(output, to: dst, bounds: CGRect(x: 0, y: 0, width: display.width, height: display.height), colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+              // Render using natural size; transform will handle rotation
+              ciContext.render(output, to: dst, bounds: CGRect(x: 0, y: 0, width: renderSize.width, height: renderSize.height), colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
               _ = adaptor.append(dst, withPresentationTime: pts)
             }
 
@@ -280,7 +276,10 @@ final class VideoWatermarkProcessor {
     return max(500_000, Int(br))
   }
 
-  private static func prepareOverlayCI(request: ComposeVideoRequest, plugin: WatermarkKitPlugin, baseWidth: CGFloat, baseHeight: CGFloat) throws -> CIImage? {
+  private static func prepareOverlayCI(request: ComposeVideoRequest, plugin: WatermarkKitPlugin, baseWidth: CGFloat, baseHeight: CGFloat, transform: CGAffineTransform, naturalSize: CGSize, offsetX: Double, offsetY: Double, offsetUnit: MeasureUnit) throws -> CIImage? {
+    // Prepare watermark at display dimensions (what user sees), then transform to natural space
+    var overlayImage: CIImage?
+    
     // Prefer watermarkImage; fallback to text
     if let data = request.watermarkImage?.data, !data.isEmpty {
       guard let src = decodeCIImage(from: data) else { return nil }
@@ -288,9 +287,8 @@ final class VideoWatermarkProcessor {
       let targetW = max(1.0, baseWidth * CGFloat(request.widthPercent))
       let extent = src.extent
       let scale = targetW / max(1.0, extent.width)
-      return src.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-    }
-    if let text = request.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      overlayImage = src.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+    } else if let text = request.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       let fontFamily = ".SFUI"
       let fontSizePt = 24.0
       let fontWeight = 600
@@ -303,9 +301,84 @@ final class VideoWatermarkProcessor {
       let targetW = max(1.0, baseWidth * CGFloat(request.widthPercent))
       let extent = src.extent
       let scale = targetW / max(1.0, extent.width)
-      return src.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+      overlayImage = src.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
     }
-    return nil
+    
+    guard let overlay = overlayImage else { return nil }
+    
+    // Transform overlay from display space to natural space using inverse transform
+    // This ensures watermark appears correctly positioned when video transform is applied
+    return transformOverlayToNaturalSpace(overlay: overlay, transform: transform, displaySize: CGSize(width: baseWidth, height: baseHeight), naturalSize: naturalSize, anchor: request.anchor, margin: request.margin, marginUnit: request.marginUnit, offsetX: offsetX, offsetY: offsetY, offsetUnit: offsetUnit)
+  }
+  
+  private static func transformOverlayToNaturalSpace(overlay: CIImage, transform: CGAffineTransform, displaySize: CGSize, naturalSize: CGSize, anchor: Anchor, margin: Double, marginUnit: MeasureUnit, offsetX: Double, offsetY: Double, offsetUnit: MeasureUnit) -> CIImage {
+    // Get overlay extent
+    let overlayExtent = overlay.extent
+    
+    // Calculate position in display space (where user expects it)
+    let marginPx: CGFloat
+    switch marginUnit {
+    case .percent:
+      marginPx = min(displaySize.width, displaySize.height) * CGFloat(margin)
+    case .px:
+      marginPx = CGFloat(margin)
+    @unknown default:
+      marginPx = CGFloat(margin)
+    }
+    
+    var displayPos = positionRect(
+      base: CGRect(origin: .zero, size: displaySize),
+      overlay: overlayExtent,
+      anchor: anchor,
+      marginX: marginPx,
+      marginY: marginPx
+    )
+    
+    // Apply offsets in display space
+    let dx = (offsetUnit == .percent) ? CGFloat(offsetX) * displaySize.width : CGFloat(offsetX)
+    let dy = (offsetUnit == .percent) ? CGFloat(offsetY) * displaySize.height : CGFloat(offsetY)
+    displayPos.x += dx
+    displayPos.y += dy
+    
+    // Determine rotation from transform
+    let rotation = atan2(transform.b, transform.a)
+    let degrees = rotation * 180 / .pi
+    
+    // Transform overlay position and rotation to match natural space
+    // Strategy: First rotate overlay, then position it correctly in natural coordinates
+    var finalTransform = CGAffineTransform.identity
+    var rotatedOverlay = overlay
+    
+    if abs(degrees - 90) < 1 {
+      // 90° CCW: portrait video shot upright
+      // Rotate overlay 90° CCW to match
+      rotatedOverlay = overlay.transformed(by: CGAffineTransform(rotationAngle: .pi / 2))
+      let rotatedExtent = rotatedOverlay.extent
+      // Map display position to natural position
+      let naturalX = displayPos.y
+      let naturalY = naturalSize.height - displayPos.x - rotatedExtent.height
+      finalTransform = CGAffineTransform(translationX: naturalX, y: naturalY)
+    } else if abs(degrees + 90) < 1 {
+      // -90° or 270° CW
+      // Rotate overlay -90° (or 270°) to match
+      rotatedOverlay = overlay.transformed(by: CGAffineTransform(rotationAngle: -.pi / 2))
+      let rotatedExtent = rotatedOverlay.extent
+      let naturalX = naturalSize.width - displayPos.y - rotatedExtent.width
+      let naturalY = displayPos.x
+      finalTransform = CGAffineTransform(translationX: naturalX, y: naturalY)
+    } else if abs(abs(degrees) - 180) < 1 {
+      // 180°: upside down
+      rotatedOverlay = overlay.transformed(by: CGAffineTransform(rotationAngle: .pi))
+      let rotatedExtent = rotatedOverlay.extent
+      let naturalX = naturalSize.width - displayPos.x - rotatedExtent.width
+      let naturalY = naturalSize.height - displayPos.y - rotatedExtent.height
+      finalTransform = CGAffineTransform(translationX: naturalX, y: naturalY)
+    } else {
+      // 0° or no rotation - no need to rotate overlay
+      finalTransform = CGAffineTransform(translationX: displayPos.x, y: displayPos.y)
+    }
+    
+    return rotatedOverlay.transformed(by: finalTransform)
   }
 
   private static func decodeCIImage(from data: Data) -> CIImage? {
