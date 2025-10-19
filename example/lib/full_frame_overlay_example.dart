@@ -547,5 +547,159 @@ class FullFrameOverlayExamples {
       ),
     );
   }
-}
 
+  /// Example 7: Aspect Ratio Conversion (16:9 to 9:16)
+  ///
+  /// Demonstrates how to convert a landscape video to portrait format
+  /// with centered video and custom background color
+  Future<void> example7AspectRatioConversion({
+    required String videoPath,
+  }) async {
+    // Target portrait dimensions (9:16 aspect ratio)
+    const targetWidth = 1080;
+    const targetHeight = 1920;
+
+    final task = await _watermarkKit.composeVideoWithWidget(
+      inputVideoPath: videoPath,
+      // Watermark positioned relative to output dimensions
+      watermarkWidget: SizedBox(
+        width: targetWidth.toDouble(),
+        height: targetHeight.toDouble(),
+        child: Stack(
+          children: [
+            // Top-center branding
+            Positioned(
+              top: 40,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Colors.purple, Colors.pink],
+                    ),
+                    borderRadius: BorderRadius.circular(25),
+                  ),
+                  child: const Text(
+                    'Portrait Mode',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+            // Bottom info
+            Positioned(
+              bottom: 40,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    'Converted from 16:9',
+                    style: TextStyle(color: Colors.white, fontSize: 14),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      widgetSize: ui.Size(targetWidth.toDouble(), targetHeight.toDouble()),
+      anchor: 'topLeft',
+      margin: 0,
+      widthPercent: 1.0,
+      // Aspect ratio conversion parameters:
+      outputWidth: targetWidth,
+      outputHeight: targetHeight,
+      backgroundColorArgb: 0xFF1A1A1A, // Dark gray background
+    );
+
+    await task.done;
+  }
+
+  /// Example 8: Image-style aspect ratio (1:1 square)
+  ///
+  /// Convert any video to square format for Instagram posts
+  Future<void> example8SquareFormat({required String videoPath}) async {
+    const targetSize = 1080; // 1:1 aspect ratio
+
+    final task = await _watermarkKit.composeVideoWithWidget(
+      inputVideoPath: videoPath,
+      watermarkWidget: SizedBox(
+        width: targetSize.toDouble(),
+        height: targetSize.toDouble(),
+        child: Stack(
+          children: [
+            // Corner watermark
+            Positioned(
+              top: 20,
+              right: 20,
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(
+                  Icons.camera_alt,
+                  color: Colors.black,
+                  size: 24,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      widgetSize: ui.Size(targetSize.toDouble(), targetSize.toDouble()),
+      anchor: 'topLeft',
+      margin: 0,
+      widthPercent: 1.0,
+      outputWidth: targetSize,
+      outputHeight: targetSize,
+      backgroundColorArgb:
+          0xFFFFFFFF, // White background for clean Instagram look
+    );
+
+    await task.done;
+  }
+
+  /// Example 9: Custom color pillarbox/letterbox
+  ///
+  /// Show how different background colors affect the final look
+  Future<void> example9CustomBackgroundColors({
+    required String videoPath,
+    required int backgroundColor,
+  }) async {
+    const targetWidth = 1080;
+    const targetHeight = 1920;
+
+    final task = await _watermarkKit.composeVideo(
+      inputVideoPath: videoPath,
+      outputWidth: targetWidth,
+      outputHeight: targetHeight,
+      backgroundColorArgb: backgroundColor,
+      // Options:
+      // 0xFF000000 - Black (default)
+      // 0xFFFFFFFF - White
+      // 0xFF1A1A1A - Dark gray
+      // 0xFF4A148C - Deep purple
+      // 0xFF00FF00 - Green screen for chroma key
+    );
+
+    await task.done;
+  }
+}

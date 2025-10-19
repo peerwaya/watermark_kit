@@ -76,11 +76,32 @@ final class VideoWatermarkProcessor {
     let t = videoTrack.preferredTransform
     let display = CGSize(width: abs(natural.applying(t).width), height: abs(natural.applying(t).height))
 
+    // Determine output dimensions (for aspect ratio conversion)
+    let outputSize: CGSize
+    let videoScale: CGFloat
+    let videoOffset: CGPoint
+    
+    if let outW = request.outputWidth, let outH = request.outputHeight, outW > 0, outH > 0 {
+      // User specified output dimensions - calculate scale and offset to center video
+      outputSize = CGSize(width: CGFloat(outW), height: CGFloat(outH))
+      let scaleW = CGFloat(outW) / display.width
+      let scaleH = CGFloat(outH) / display.height
+      videoScale = min(scaleW, scaleH) // Fit video within output dimensions
+      let scaledW = display.width * videoScale
+      let scaledH = display.height * videoScale
+      videoOffset = CGPoint(x: (CGFloat(outW) - scaledW) / 2, y: (CGFloat(outH) - scaledH) / 2)
+    } else {
+      // No output dimensions specified - use original display size
+      outputSize = display
+      videoScale = 1.0
+      videoOffset = .zero
+    }
+
     // Use natural size for rendering; transform will handle rotation
     let renderSize = natural
     
-    // Prepare overlay for display dimensions (user expectation), then transform to natural space
-    let overlayCI: CIImage? = try Self.prepareOverlayCI(request: request, plugin: plugin, baseWidth: display.width, baseHeight: display.height, transform: t, naturalSize: natural, offsetX: request.offsetX, offsetY: request.offsetY, offsetUnit: request.offsetUnit)
+    // Prepare overlay for OUTPUT dimensions (where watermark should appear)
+    let overlayCI: CIImage? = try Self.prepareOverlayCI(request: request, plugin: plugin, baseWidth: outputSize.width, baseHeight: outputSize.height, transform: CGAffineTransform.identity, naturalSize: outputSize, offsetX: request.offsetX, offsetY: request.offsetY, offsetUnit: request.offsetUnit)
 
     let reader = try AVAssetReader(asset: asset)
     let videoReaderOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: [
@@ -104,8 +125,8 @@ final class VideoWatermarkProcessor {
     let writer = try AVAssetWriter(outputURL: state.outputURL, fileType: .mp4)
     // Video writer input
     let codec: AVVideoCodecType = (request.codec == .hevc) ? .hevc : .h264
-    // Use display size for bitrate estimation (final output size)
-    let defaultBitrate = Int64(Self.estimateBitrate(width: Int(display.width), height: Int(display.height), fps: Float(videoTrack.nominalFrameRate)))
+    // Use output size for bitrate estimation (final output size)
+    let defaultBitrate = Int64(Self.estimateBitrate(width: Int(outputSize.width), height: Int(outputSize.height), fps: Float(videoTrack.nominalFrameRate)))
     let bitrate64: Int64 = request.bitrateBps ?? defaultBitrate
     var compression: [String: Any] = [
       AVVideoAverageBitRateKey: NSNumber(value: bitrate64),
@@ -113,23 +134,23 @@ final class VideoWatermarkProcessor {
     if codec == .h264 {
       compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
     }
-    // Use natural (unrotated) size for video settings; transform will handle rotation
+    // Use output size for video settings (final dimensions including letterbox/pillarbox)
     let videoSettings: [String: Any] = [
       AVVideoCodecKey: codec,
-      AVVideoWidthKey: Int(renderSize.width),
-      AVVideoHeightKey: Int(renderSize.height),
+      AVVideoWidthKey: Int(outputSize.width),
+      AVVideoHeightKey: Int(outputSize.height),
       AVVideoCompressionPropertiesKey: compression,
     ]
     let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
     videoInput.expectsMediaDataInRealTime = false
-    videoInput.transform = videoTrack.preferredTransform
+    videoInput.transform = CGAffineTransform.identity // No rotation - we handle it in composition
     guard writer.canAdd(videoInput) else { throw NSError(domain: "wm", code: -3, userInfo: [NSLocalizedDescriptionKey: "Cannot add video writer input"]) }
     writer.add(videoInput)
-    // Use natural size for pixel buffers; transform will handle rotation
+    // Use output size for pixel buffers
     let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: videoInput, sourcePixelBufferAttributes: [
       kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-      kCVPixelBufferWidthKey as String: Int(renderSize.width),
-      kCVPixelBufferHeightKey as String: Int(renderSize.height),
+      kCVPixelBufferWidthKey as String: Int(outputSize.width),
+      kCVPixelBufferHeightKey as String: Int(outputSize.height),
       kCVPixelBufferIOSurfacePropertiesKey as String: [:]
     ])
 
@@ -151,7 +172,11 @@ final class VideoWatermarkProcessor {
 
     let ciContext = plugin.sharedCIContext
 
-    // Apply opacity to overlay (already positioned and transformed in natural space)
+    // Background color for letterbox/pillarbox
+    let bgColorArgb = request.backgroundColorArgb ?? 0xFF000000 // Default to black
+    let bgColor = Self.argbToCIColor(bgColorArgb)
+    
+    // Apply opacity to overlay (already positioned in output space)
     let preparedOverlay: CIImage? = {
       guard let ov = overlayCI else { return nil }
       // Apply opacity
@@ -175,19 +200,39 @@ final class VideoWatermarkProcessor {
 
             // Create base CIImage from sample
             if let srcPB = CMSampleBufferGetImageBuffer(sample) {
-              let base = CIImage(cvPixelBuffer: srcPB)
-              let output: CIImage
+              var videoFrame = CIImage(cvPixelBuffer: srcPB)
+              
+              // Apply transform to handle rotation
+              videoFrame = videoFrame.transformed(by: t)
+              
+              // Scale and position video frame if aspect ratio conversion is enabled
+              if videoScale != 1.0 || videoOffset != .zero {
+                // Scale video
+                let scaleTransform = CGAffineTransform(scaleX: videoScale, y: videoScale)
+                videoFrame = videoFrame.transformed(by: scaleTransform)
+                
+                // Translate to center position
+                let translateTransform = CGAffineTransform(translationX: videoOffset.x, y: videoOffset.y)
+                videoFrame = videoFrame.transformed(by: translateTransform)
+              }
+              
+              // Create background with specified color
+              let background = CIImage(color: CIColor(red: bgColor.red, green: bgColor.green, blue: bgColor.blue, alpha: bgColor.alpha))
+                .cropped(to: CGRect(x: 0, y: 0, width: outputSize.width, height: outputSize.height))
+              
+              // Composite video on background
+              var output = videoFrame.composited(over: background)
+              
+              // Apply watermark overlay
               if let overlay = preparedOverlay {
-                // Source-over
                 let filter = CIFilter(name: "CISourceOverCompositing")!
                 filter.setValue(overlay, forKey: kCIInputImageKey)
-                filter.setValue(base, forKey: kCIInputBackgroundImageKey)
-                output = filter.outputImage ?? base
-              } else {
-                output = base
+                filter.setValue(output, forKey: kCIInputBackgroundImageKey)
+                output = filter.outputImage ?? output
               }
-              // Render using natural size; transform will handle rotation
-              ciContext.render(output, to: dst, bounds: CGRect(x: 0, y: 0, width: renderSize.width, height: renderSize.height), colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+              
+              // Render using output size
+              ciContext.render(output, to: dst, bounds: CGRect(x: 0, y: 0, width: outputSize.width, height: outputSize.height), colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
               _ = adaptor.append(dst, withPresentationTime: pts)
             }
 
@@ -251,8 +296,8 @@ final class VideoWatermarkProcessor {
         if writer.status == .completed {
           let res = ComposeVideoResult(taskId: taskId,
                                        outputVideoPath: state.outputURL.path,
-                                       width: Int64(display.width),
-                                       height: Int64(display.height),
+                                       width: Int64(outputSize.width),
+                                       height: Int64(outputSize.height),
                                        durationMs: Int64(duration * 1000.0),
                                        codec: request.codec)
           DispatchQueue.main.async {
@@ -267,6 +312,14 @@ final class VideoWatermarkProcessor {
         self.tasks[taskId] = nil
       }
     }
+  }
+  
+  private static func argbToCIColor(_ argb: Int64) -> (red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
+    let a = CGFloat((argb >> 24) & 0xFF) / 255.0
+    let r = CGFloat((argb >> 16) & 0xFF) / 255.0
+    let g = CGFloat((argb >> 8) & 0xFF) / 255.0
+    let b = CGFloat(argb & 0xFF) / 255.0
+    return (red: r, green: g, blue: b, alpha: a)
   }
 
   private static func estimateBitrate(width: Int, height: Int, fps: Float) -> Int {

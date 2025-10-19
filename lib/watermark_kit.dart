@@ -98,6 +98,9 @@ class WatermarkKit {
     int? bitrateBps,
     double? maxFps,
     int? maxLongSide,
+    int? outputWidth,
+    int? outputHeight,
+    int? backgroundColorArgb,
   }) {
     return WatermarkKitPlatform.instance.composeVideo(
       inputVideoPath: inputVideoPath,
@@ -116,6 +119,9 @@ class WatermarkKit {
       bitrateBps: bitrateBps,
       maxFps: maxFps,
       maxLongSide: maxLongSide,
+      outputWidth: outputWidth,
+      outputHeight: outputHeight,
+      backgroundColorArgb: backgroundColorArgb,
     );
   }
 
@@ -214,6 +220,9 @@ class WatermarkKit {
     int? bitrateBps,
     double? maxFps,
     int? maxLongSide,
+    int? outputWidth,
+    int? outputHeight,
+    int? backgroundColorArgb,
     double? pixelRatio,
   }) async {
     // Capture the widget as image
@@ -240,6 +249,9 @@ class WatermarkKit {
       bitrateBps: bitrateBps,
       maxFps: maxFps,
       maxLongSide: maxLongSide,
+      outputWidth: outputWidth,
+      outputHeight: outputHeight,
+      backgroundColorArgb: backgroundColorArgb,
     );
   }
 
@@ -279,6 +291,9 @@ class WatermarkKit {
     int? bitrateBps,
     double? maxFps,
     int? maxLongSide,
+    int? outputWidth,
+    int? outputHeight,
+    int? backgroundColorArgb,
     double? pixelRatio,
   }) async {
     // Capture from the key
@@ -303,6 +318,9 @@ class WatermarkKit {
       bitrateBps: bitrateBps,
       maxFps: maxFps,
       maxLongSide: maxLongSide,
+      outputWidth: outputWidth,
+      outputHeight: outputHeight,
+      backgroundColorArgb: backgroundColorArgb,
     );
   }
 }

@@ -117,14 +117,30 @@ internal class GlRenderer {
     EGL14.eglSwapBuffers(display, encoderSurface)
   }
 
-  fun drawVideoFrame(stMatrix: FloatArray, rotationDeg: Int, viewW: Int, viewH: Int) {
+  fun drawVideoFrame(
+    stMatrix: FloatArray, 
+    rotationDeg: Int, 
+    viewW: Int, 
+    viewH: Int,
+    bgColor: FloatArray = floatArrayOf(0f, 0f, 0f, 1f),
+    videoX: Int = 0,
+    videoY: Int = 0,
+    videoW: Int = viewW,
+    videoH: Int = viewH
+  ) {
+    // Clear entire viewport with background color
     GLES20.glViewport(0, 0, viewW, viewH)
-    GLES20.glClearColor(0f, 0f, 0f, 1f)
+    GLES20.glClearColor(bgColor[0], bgColor[1], bgColor[2], bgColor[3])
     GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 
+    // Draw video in specified viewport area
+    GLES20.glViewport(videoX, videoY, videoW, videoH)
     GLES20.glUseProgram(progOes.id)
     val verts = createFullscreenQuad(rotationDeg)
     drawQuad(progOes, verts, stMatrix, oes = true, opacity = 1f)
+    
+    // Reset viewport for overlay rendering
+    GLES20.glViewport(0, 0, viewW, viewH)
   }
 
   fun drawYuvFrame(
@@ -138,11 +154,18 @@ internal class GlRenderer {
     height: Int,
     rotationDeg: Int,
     viewW: Int,
-    viewH: Int
+    viewH: Int,
+    bgColor: FloatArray = floatArrayOf(0f, 0f, 0f, 1f),
+    videoX: Int = 0,
+    videoY: Int = 0,
+    videoW: Int = viewW,
+    videoH: Int = viewH
   ) {
     ensureYuvTextures(width, height)
+    
+    // Clear entire viewport with background color
     GLES20.glViewport(0, 0, viewW, viewH)
-    GLES20.glClearColor(0f, 0f, 0f, 1f)
+    GLES20.glClearColor(bgColor[0], bgColor[1], bgColor[2], bgColor[3])
     GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 
     // Upload planes (tight-pack if needed)
@@ -150,6 +173,8 @@ internal class GlRenderer {
     uploadPlane(yuvTexIds!![1], u, width / 2, height / 2, uStride)
     uploadPlane(yuvTexIds!![2], v, width / 2, height / 2, vStride)
 
+    // Draw video in specified viewport area
+    GLES20.glViewport(videoX, videoY, videoW, videoH)
     val program = progYuv ?: return
     GLES20.glUseProgram(program.id)
     val verts = createFullscreenQuad(rotationDeg)
@@ -176,6 +201,9 @@ internal class GlRenderer {
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+    
+    // Reset viewport for overlay rendering
+    GLES20.glViewport(0, 0, viewW, viewH)
   }
 
   private fun ensureYuvTextures(width: Int, height: Int) {

@@ -274,6 +274,9 @@ class MethodChannelWatermarkKit extends WatermarkKitPlatform {
     int? bitrateBps,
     double? maxFps,
     int? maxLongSide,
+    int? outputWidth,
+    int? outputHeight,
+    int? backgroundColorArgb,
   }) async {
     _ensureCallbacksRegistered();
     final taskId = _genTaskId();
@@ -301,6 +304,9 @@ class MethodChannelWatermarkKit extends WatermarkKitPlatform {
       bitrateBps: bitrateBps,
       maxFps: maxFps,
       maxLongSide: maxLongSide,
+      outputWidth: outputWidth,
+      outputHeight: outputHeight,
+      backgroundColorArgb: backgroundColorArgb,
     );
 
     // Fire-and-forget; completion will also complete the future

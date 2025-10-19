@@ -89,7 +89,34 @@ internal class VideoWatermarkProcessor(private val appContext: Context) {
     val displayW = if (rotation % 180 != 0) srcH else srcW
     val displayH = if (rotation % 180 != 0) srcW else srcH
 
-    val encWH = chooseEncodeSize(displayW, displayH, req.maxLongSide?.toInt())
+    // Determine output dimensions (for aspect ratio conversion)
+    val outputW: Int
+    val outputH: Int
+    val videoScale: Float
+    val videoOffsetX: Int
+    val videoOffsetY: Int
+    
+    if (req.outputWidth != null && req.outputHeight != null && req.outputWidth!! > 0 && req.outputHeight!! > 0) {
+      // User specified output dimensions - calculate scale and offset to center video
+      outputW = req.outputWidth!!.toInt()
+      outputH = req.outputHeight!!.toInt()
+      val scaleW = outputW.toFloat() / displayW
+      val scaleH = outputH.toFloat() / displayH
+      videoScale = minOf(scaleW, scaleH) // Fit video within output dimensions
+      val scaledW = (displayW * videoScale).toInt()
+      val scaledH = (displayH * videoScale).toInt()
+      videoOffsetX = (outputW - scaledW) / 2
+      videoOffsetY = (outputH - scaledH) / 2
+    } else {
+      // No output dimensions specified - use original display size
+      outputW = displayW
+      outputH = displayH
+      videoScale = 1f
+      videoOffsetX = 0
+      videoOffsetY = 0
+    }
+
+    val encWH = chooseEncodeSize(outputW, outputH, req.maxLongSide?.toInt())
     val encW = encWH.first; val encH = encWH.second
     val fpsGuess = guessFps(vFmt)
     val bitrate = (req.bitrateBps?.toInt() ?: estimateBitrate(encW, encH, fpsGuess))
@@ -137,8 +164,16 @@ internal class VideoWatermarkProcessor(private val appContext: Context) {
     gl.setEncoderSurface(inputSurface)
     gl.makeCurrent()
 
-    // Overlay texture
-    val overlayInfo = prepareOverlay(req, displayW, displayH)
+    // Background color for letterbox/pillarbox
+    val bgColorArgb = req.backgroundColorArgb ?: 0xFF000000
+    val bgColor = argbToFloatArray(bgColorArgb.toLong())
+    
+    // Calculate video viewport (scaled and centered within output)
+    val scaledVideoW = (displayW * videoScale).toInt()
+    val scaledVideoH = (displayH * videoScale).toInt()
+    
+    // Overlay texture (use output dimensions for positioning)
+    val overlayInfo = prepareOverlay(req, encW, encH)
     val overlayTexId = overlayInfo?.let { bmp ->
       val id = gl.create2DTextureFromBitmap(bmp.bitmap)
       bmp.bitmap.recycle()
@@ -246,7 +281,17 @@ internal class VideoWatermarkProcessor(private val appContext: Context) {
             val stMatrix = gl.updateDecoderTexImage()
             // Draw into encoder surface
             gl.makeCurrent()
-            gl.drawVideoFrame(stMatrix, rotation, encW, encH)
+            gl.drawVideoFrame(
+              stMatrix, 
+              rotation, 
+              encW, 
+              encH, 
+              bgColor,
+              videoOffsetX,
+              videoOffsetY,
+              scaledVideoW,
+              scaledVideoH
+            )
             overlayInfo?.let { ov ->
               gl.drawOverlay(ov.posX, ov.posY, ov.wPx, ov.hPx, encW, encH, overlayTexId, req.opacity.toFloat())
             }
@@ -312,14 +357,14 @@ internal class VideoWatermarkProcessor(private val appContext: Context) {
         try { encoder.stop(); encoder.release() } catch (_: Throwable) {}
         // Use same muxer (not started yet) and audioExtractor
         // Reuse existing gl
-        processByteBuffer(req, callbacks, muxer, audioExtractor, audioTrackIndexMuxer, gl, encW, encH, rotation, videoCodec, bitrate, fpsGuess)
+        processByteBuffer(req, callbacks, muxer, audioExtractor, audioTrackIndexMuxer, gl, encW, encH, rotation, videoCodec, bitrate, fpsGuess, videoOffsetX, videoOffsetY, scaledVideoW, scaledVideoH, bgColor)
         return
       }
     }
 
     if (!useSurfacePath && !task.cancelled) {
       // Fallback: ByteBuffer decode path
-      processByteBuffer(req, callbacks, muxer, audioExtractor, audioTrackIndexMuxer, gl, encW, encH, rotation, videoCodec, bitrate, fpsGuess)
+      processByteBuffer(req, callbacks, muxer, audioExtractor, audioTrackIndexMuxer, gl, encW, encH, rotation, videoCodec, bitrate, fpsGuess, videoOffsetX, videoOffsetY, scaledVideoW, scaledVideoH, bgColor)
       // processByteBuffer handles muxer.stop/release etc.
       return
     }
@@ -381,7 +426,12 @@ internal class VideoWatermarkProcessor(private val appContext: Context) {
     rotation: Int,
     videoCodec: String,
     bitrate: Int,
-    fpsGuess: Double
+    fpsGuess: Double,
+    videoOffsetX: Int = 0,
+    videoOffsetY: Int = 0,
+    scaledVideoW: Int = encW,
+    scaledVideoH: Int = encH,
+    bgColor: FloatArray = floatArrayOf(0f, 0f, 0f, 1f)
   ) {
     val extractor = MediaExtractor()
     extractor.setDataSource(req.inputVideoPath)
@@ -459,7 +509,7 @@ internal class VideoWatermarkProcessor(private val appContext: Context) {
             val uBuf = packTight(uPlane.buffer, image.width / 2, image.height / 2, uPlane.rowStride, uPlane.pixelStride)
             val vBuf = packTight(vPlane.buffer, image.width / 2, image.height / 2, vPlane.rowStride, vPlane.pixelStride)
 
-            gl.drawYuvFrame(yBuf, uBuf, vBuf, image.width, image.width / 2, image.width / 2, image.width, image.height, rotation, encW, encH)
+            gl.drawYuvFrame(yBuf, uBuf, vBuf, image.width, image.width / 2, image.width / 2, image.width, image.height, rotation, encW, encH, bgColor, videoOffsetX, videoOffsetY, scaledVideoW, scaledVideoH)
             overlay?.let { ov ->
               overlayTexId?.let { tid -> gl.drawOverlay(ov.posX, ov.posY, ov.wPx, ov.hPx, encW, encH, tid, req.opacity.toFloat()) }
             }
@@ -714,5 +764,13 @@ internal class VideoWatermarkProcessor(private val appContext: Context) {
       }
       audioExtractor.release()
     }.start()
+  }
+  
+  private fun argbToFloatArray(argb: Long): FloatArray {
+    val a = ((argb shr 24) and 0xFF) / 255f
+    val r = ((argb shr 16) and 0xFF) / 255f
+    val g = ((argb shr 8) and 0xFF) / 255f
+    val b = (argb and 0xFF) / 255f
+    return floatArrayOf(r, g, b, a)
   }
 }

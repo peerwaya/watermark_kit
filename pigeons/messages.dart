@@ -10,15 +10,15 @@ import 'package:pigeon/pigeon.dart';
     dartOptions: DartOptions(),
     swiftOut: 'ios/Classes/Messages.g.swift',
     swiftOptions: SwiftOptions(),
-    kotlinOut: 'android/src/main/kotlin/com/tttocklll/watermark_kit/Messages.g.kt',
-    kotlinOptions: KotlinOptions(
-      package: 'com.tttocklll.watermark_kit',
-    ),
+    kotlinOut:
+        'android/src/main/kotlin/com/tttocklll/watermark_kit/Messages.g.kt',
+    kotlinOptions: KotlinOptions(package: 'com.tttocklll.watermark_kit'),
   ),
 )
 enum Anchor { topLeft, topRight, bottomLeft, bottomRight, center }
 
 enum OutputFormat { jpeg, png }
+
 enum MeasureUnit { px, percent }
 
 class ComposeImageRequest {
@@ -75,7 +75,7 @@ class TextStyleDto {
   String fontFamily;
   double fontSizePt;
   int fontWeight; // 100..900
-  int colorArgb;  // ARGB32
+  int colorArgb; // ARGB32
 }
 
 class WmStyleDto {
@@ -85,10 +85,10 @@ class WmStyleDto {
     this.strokeWidth = 1.0,
     this.shadowBlur = 0.0,
   });
-  double opacity;     // 0..1
+  double opacity; // 0..1
   bool stroke;
   double strokeWidth; // px
-  double shadowBlur;  // px
+  double shadowBlur; // px
 }
 
 class ComposeTextRequest {
@@ -169,13 +169,16 @@ class ComposeVideoRequest {
     this.bitrateBps,
     this.maxFps,
     this.maxLongSide,
+    this.outputWidth,
+    this.outputHeight,
+    this.backgroundColorArgb,
   });
 
   String? taskId; // If null, host side will generate one
   String inputVideoPath;
   String? outputVideoPath;
   Uint8List? watermarkImage; // If null and text!=null, text watermark is used
-  String? text;              // If non-null, render text -> image internally
+  String? text; // If non-null, render text -> image internally
   Anchor anchor;
   double margin;
   MeasureUnit marginUnit;
@@ -188,6 +191,10 @@ class ComposeVideoRequest {
   int? bitrateBps;
   double? maxFps;
   int? maxLongSide;
+  int? outputWidth; // If specified, video will be centered in this width
+  int? outputHeight; // If specified, video will be centered in this height
+  int?
+  backgroundColorArgb; // Background color for letterbox/pillarbox (default: 0xFF000000 black)
 }
 
 class ComposeVideoResult {

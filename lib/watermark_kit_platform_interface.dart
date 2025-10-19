@@ -112,6 +112,9 @@ abstract class WatermarkKitPlatform extends PlatformInterface {
     int? bitrateBps,
     double? maxFps,
     int? maxLongSide,
+    int? outputWidth,
+    int? outputHeight,
+    int? backgroundColorArgb,
   }) {
     throw UnimplementedError('composeVideo() has not been implemented.');
   }
